@@ -22,6 +22,8 @@
 #endif
 
 static const char* TAG = "tilt";
+static const char *BUILD_VER = "1n";
+
 #define PROMPT_STR "tilt"
 
 
@@ -29,9 +31,9 @@ static const char* TAG = "tilt";
 #define HISTORY_PATH MOUNT_PATH "/history.txt"
 
 #define RS485_UART_NUM         UART_NUM_1
-#define RS485_RX_PIN           2
-#define RS485_TX_PIN           3
-#define RS485_ENABLE_PIN       4
+#define RS485_RX_PIN           GPIO_NUM_3
+#define RS485_TX_PIN           GPIO_NUM_2
+#define RS485_ENABLE_PIN       GPIO_NUM_NC
 #define RS485_UART_BUFFER_SIZE (1024)
 
 
@@ -108,6 +110,20 @@ static int cmd_rotate(void *context, int argc, char **argv)
     printf("Rotating turret to %d degrees.\n", degrees);
     return 0;
 }
+
+static int cmd_build_ver(void *context, int argc, char **argv) {
+//    cmd_context_t *ctx = (cmd_context_t *)context;
+    printf("Build ver is '%s'\n", BUILD_VER);
+    return 0;
+}
+
+static int cmd_send_ef(void *context, int argc, char **argv) {
+    cmd_context_t *ctx = (cmd_context_t *)context;
+    printf("sent status %d\n", pelco_bus_send_ef(ctx->dev));
+    return 0;
+}
+
+
 void app_main(void)
 {
     esp_console_repl_t *repl = NULL;
@@ -134,12 +150,12 @@ void app_main(void)
     register_nvs();
 
 
-    /* Set UART pins for RS485 operation */
-    uart_set_pin(RS485_UART_NUM, RS485_TX_PIN, RS485_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 
     /* Configure the Pelco bus structure with member-by-member initialization */
     static pelco_bus_t pelcoDevice = {
         .uart_num = RS485_UART_NUM,
+		.tx_pin = RS485_TX_PIN,
+		.rx_pin = RS485_RX_PIN,
         .enable_pin = RS485_ENABLE_PIN,
         .camera_address = 1,  /* Change to your camera's address if necessary */
     };
@@ -175,6 +191,24 @@ void app_main(void)
 			.context = &ctx,
         };
         ESP_ERROR_CHECK(esp_console_cmd_register(&rotate_cmd));
+	}
+	{
+        const esp_console_cmd_t build_ver_cmd = {
+            .command = "build_ver",
+            .help = "Show build version",
+            .func_w_context = cmd_build_ver,
+			.context = &ctx,
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&build_ver_cmd));
+    }
+	{
+        const esp_console_cmd_t send_ef_cmd = {
+            .command = "send_ef",
+            .help = "send 0xEF for testing",
+            .func_w_context = cmd_send_ef,
+			.context = &ctx,
+        };
+        ESP_ERROR_CHECK(esp_console_cmd_register(&send_ef_cmd));
     }
     
 #if defined(CONFIG_ESP_CONSOLE_UART_DEFAULT) || defined(CONFIG_ESP_CONSOLE_UART_CUSTOM)

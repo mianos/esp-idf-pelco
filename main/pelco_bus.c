@@ -40,7 +40,8 @@ esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate)
         ESP_LOGE(TAG, "UART driver install failed");
         return error;
     }
-    if (bus->enable_pin >= 0) {
+	uart_set_pin(bus->uart_num, bus->tx_pin, bus->rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // num, tx, rx ...
+    if (bus->enable_pin != GPIO_NUM_NC) {
         esp_rom_gpio_pad_select_gpio(bus->enable_pin);
         gpio_set_direction(bus->enable_pin, GPIO_MODE_OUTPUT);
         gpio_set_level(bus->enable_pin, 1);
@@ -61,7 +62,7 @@ bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint
     msg[5] = data2;
     calculate_checksum(msg, &msg[6]);
     
-    if (bus->enable_pin >= 0) {
+    if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
     int written = uart_write_bytes(bus->uart_num, (const char *)msg, PELCO_MSG_LEN);
@@ -70,12 +71,12 @@ bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint
         return false;
     }
     if (!disable_ack) {
-        if (bus->enable_pin >= 0) {
+        if (bus->enable_pin != GPIO_NUM_NC) {
             gpio_set_level(bus->enable_pin, 0);
         }
         uint8_t ack[4] = {0};
         int ret = uart_read_bytes(bus->uart_num, ack, sizeof(ack), 100 / portTICK_PERIOD_MS);
-        if (bus->enable_pin >= 0) {
+        if (bus->enable_pin != GPIO_NUM_NC) {
             gpio_set_level(bus->enable_pin, 1);
         }
         if (ret != sizeof(ack)) {
@@ -96,12 +97,12 @@ uint16_t pelco_bus_request(pelco_bus_t *bus, uint8_t request, int timeout_ms)
     if (!pelco_bus_command(bus, true, request, 0x00, 0x00)) {
         return 0xFFFF;
     }
-    if (bus->enable_pin >= 0) {
+    if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 0);
     }
     uint8_t response[PELCO_MSG_LEN] = {0};
     int ret = uart_read_bytes(bus->uart_num, response, sizeof(response), timeout_ms / portTICK_PERIOD_MS);
-    if (bus->enable_pin >= 0) {
+    if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
     if (ret != sizeof(response)) {
@@ -156,7 +157,7 @@ bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string)
         ESP_LOGW(TAG, "Fixing checksum");
         raw_command[6] = checksum;
     }
-    if (bus->enable_pin >= 0) {
+    if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
     int written = uart_write_bytes(bus->uart_num, (const char *)raw_command, PELCO_MSG_LEN);
@@ -167,3 +168,21 @@ bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string)
     return true;
 }
 
+
+bool pelco_bus_send_ef(pelco_bus_t *bus)
+{
+    const size_t messageLength = 100;
+    uint8_t rawCommand[messageLength];
+    memset(rawCommand, 0xEF, messageLength);
+
+    if (bus->enable_pin != GPIO_NUM_NC) {
+        gpio_set_level(bus->enable_pin, 1);
+    }
+
+    int writtenBytes = uart_write_bytes(bus->uart_num, (const char *)rawCommand, messageLength);
+    if (writtenBytes != messageLength) {
+        ESP_LOGE(TAG, "Failed to send EF command");
+        return false;
+    }
+    return true;
+}

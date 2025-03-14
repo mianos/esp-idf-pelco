@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 static const char *TAG = "pelco_bus";
 #define PELCO_MSG_LEN 7
@@ -30,17 +32,17 @@ esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate)
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     };
-    esp_err_t error = uart_param_config(bus->uart_num, &uart_config);
-    if (error != ESP_OK) {
+    esp_err_t initializationError = uart_param_config(bus->uart_num, &uart_config);
+    if (initializationError != ESP_OK) {
         ESP_LOGE(TAG, "UART param config failed");
-        return error;
+        return initializationError;
     }
-    error = uart_driver_install(bus->uart_num, 1024, 0, 0, NULL, 0);
-    if (error != ESP_OK) {
+    initializationError = uart_driver_install(bus->uart_num, 1024, 0, 0, NULL, 0);
+    if (initializationError != ESP_OK) {
         ESP_LOGE(TAG, "UART driver install failed");
-        return error;
+        return initializationError;
     }
-	uart_set_pin(bus->uart_num, bus->tx_pin, bus->rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE); // num, tx, rx ...
+    uart_set_pin(bus->uart_num, bus->tx_pin, bus->rx_pin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (bus->enable_pin != GPIO_NUM_NC) {
         esp_rom_gpio_pad_select_gpio(bus->enable_pin);
         gpio_set_direction(bus->enable_pin, GPIO_MODE_OUTPUT);
@@ -48,8 +50,6 @@ esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate)
     }
     return ESP_OK;
 }
-
-
 
 bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint16_t data1, uint8_t data2)
 {
@@ -61,7 +61,7 @@ bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint
     msg[4] = (uint8_t)(data1 & 0xFF);
     msg[5] = data2;
     calculate_checksum(msg, &msg[6]);
-    
+
     if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
@@ -124,65 +124,91 @@ uint16_t pelco_bus_request(pelco_bus_t *bus, uint8_t request, int timeout_ms)
 
 bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string)
 {
-    char hex_buf[128];
-    strncpy(hex_buf, hex_string, sizeof(hex_buf));
-    hex_buf[sizeof(hex_buf)-1] = '\0';
-    char *src = hex_buf, *dst = hex_buf;
-    while (*src) {
-        if (*src != ' ') {
-            *dst++ = *src;
+    char hexBuffer[128];
+    strncpy(hexBuffer, hex_string, sizeof(hexBuffer));
+    hexBuffer[sizeof(hexBuffer) - 1] = '\0';
+    char *source = hexBuffer, *destination = hexBuffer;
+    while (*source) {
+        if (*source != ' ') {
+            *destination++ = *source;
         }
-        src++;
+        source++;
     }
-    *dst = '\0';
-    size_t hex_len = strlen(hex_buf);
-    if (hex_len % 2 != 0 || hex_len / 2 != PELCO_MSG_LEN) {
+    *destination = '\0';
+    size_t hexLength = strlen(hexBuffer);
+    if (hexLength % 2 != 0 || hexLength / 2 != PELCO_MSG_LEN) {
         ESP_LOGE(TAG, "Hex string length error");
         return false;
     }
-    uint8_t raw_command[PELCO_MSG_LEN];
-    char byte_str[3] = {0};
+    uint8_t rawCommand[PELCO_MSG_LEN];
+    char byteString[3] = {0};
     for (size_t index = 0; index < PELCO_MSG_LEN; index++) {
-        byte_str[0] = hex_buf[index * 2];
-        byte_str[1] = hex_buf[index * 2 + 1];
-        raw_command[index] = (uint8_t)strtol(byte_str, NULL, 16);
+        byteString[0] = hexBuffer[index * 2];
+        byteString[1] = hexBuffer[index * 2 + 1];
+        rawCommand[index] = (uint8_t)strtol(byteString, NULL, 16);
     }
-    if (raw_command[0] != 0xFF) {
+    if (rawCommand[0] != 0xFF) {
         ESP_LOGW(TAG, "Fixing sync byte");
-        raw_command[0] = 0xFF;
+        rawCommand[0] = 0xFF;
     }
     uint8_t checksum;
-    calculate_checksum(raw_command, &checksum);
-    if (checksum != raw_command[6]) {
+    calculate_checksum(rawCommand, &checksum);
+    if (checksum != rawCommand[6]) {
         ESP_LOGW(TAG, "Fixing checksum");
-        raw_command[6] = checksum;
+        rawCommand[6] = checksum;
     }
     if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
-    int written = uart_write_bytes(bus->uart_num, (const char *)raw_command, PELCO_MSG_LEN);
-    if (written != PELCO_MSG_LEN) {
+    int writtenBytes = uart_write_bytes(bus->uart_num, (const char *)rawCommand, PELCO_MSG_LEN);
+    if (writtenBytes != PELCO_MSG_LEN) {
         ESP_LOGE(TAG, "Failed to send raw command");
         return false;
     }
     return true;
 }
 
+static TaskHandle_t s_debugTaskHandle = NULL;
 
-bool pelco_bus_send_ef(pelco_bus_t *bus)
+static void pelco_bus_debug_task(void *pvParameters)
 {
-    const size_t messageLength = 100;
-    uint8_t rawCommand[messageLength];
-    memset(rawCommand, 0xEF, messageLength);
-
-    if (bus->enable_pin != GPIO_NUM_NC) {
-        gpio_set_level(bus->enable_pin, 1);
+    pelco_bus_t *bus = (pelco_bus_t *)pvParameters;
+    uint8_t debugBuffer[256];
+    while (1) {
+        int bytesRead = uart_read_bytes(bus->uart_num, debugBuffer, sizeof(debugBuffer), pdMS_TO_TICKS(100));
+        if (bytesRead > 0) {
+            printf("Debug: Received %d bytes: ", bytesRead);
+            for (int index = 0; index < bytesRead; index++) {
+                printf("%02X ", debugBuffer[index]);
+            }
+            printf("\n");
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
 
-    int writtenBytes = uart_write_bytes(bus->uart_num, (const char *)rawCommand, messageLength);
-    if (writtenBytes != messageLength) {
-        ESP_LOGE(TAG, "Failed to send EF command");
+bool pelco_bus_debug_start(pelco_bus_t *bus)
+{
+    if (s_debugTaskHandle != NULL) {
+        ESP_LOGW(TAG, "Debug bus already running");
         return false;
     }
+    if (xTaskCreate(pelco_bus_debug_task, "pelco_bus_debug", 4096, (void *)bus, 5, &s_debugTaskHandle) != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create debug task");
+        return false;
+    }
+    ESP_LOGI(TAG, "Debug bus started");
     return true;
 }
+
+void pelco_bus_debug_stop(void)
+{
+    if (s_debugTaskHandle != NULL) {
+        vTaskDelete(s_debugTaskHandle);
+        s_debugTaskHandle = NULL;
+        ESP_LOGI(TAG, "Debug bus stopped");
+    } else {
+        ESP_LOGW(TAG, "Debug bus is not running");
+    }
+}
+

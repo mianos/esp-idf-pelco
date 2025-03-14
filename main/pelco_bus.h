@@ -33,7 +33,8 @@ esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate);
 bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint16_t data1, uint8_t data2);
 uint16_t pelco_bus_request(pelco_bus_t *bus, uint8_t request, int timeout_ms);
 bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string);
-bool pelco_bus_send_ef(pelco_bus_t *bus);
+bool pelco_bus_debug_start(pelco_bus_t *bus);
+void pelco_bus_debug_stop(void);
 
 #ifdef __cplusplus
 }

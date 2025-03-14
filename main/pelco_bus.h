@@ -12,8 +12,11 @@ extern "C" {
 
 /* Define Pelco command codes for setting tilt and pan (rotate) positions.
    These values are exemplary and should be adjusted per your camera's documentation. */
-#define PELCO_CMD_TILT_SET   0x51
-#define PELCO_CMD_ROTATE_SET 0x53
+//#define PELCO_CMD_TILT_SET   0x51
+//#define PELCO_CMD_ROTATE_SET 0x53
+
+#define PELCO_CMD_TILT_CMD 0x10
+#define PELCO_CMD_ROTATE_CMD 0x04
 
 typedef enum {
     PELCO_BAUD_2400 = 2400,
@@ -30,9 +33,7 @@ typedef struct {
 } pelco_bus_t;
 
 esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate);
-bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint16_t data1, uint8_t data2);
-uint16_t pelco_bus_request(pelco_bus_t *bus, uint8_t request, int timeout_ms);
-bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string);
+bool pelco_bus_command(pelco_bus_t *bus, uint8_t command, uint8_t data1, uint8_t data2);
 bool pelco_bus_debug_start(pelco_bus_t *bus);
 void pelco_bus_debug_stop(void);
 

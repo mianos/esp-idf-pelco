@@ -1,4 +1,3 @@
-
 #include "pelco_bus.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
@@ -13,11 +12,23 @@
 static const char *TAG = "pelco_bus";
 #define PELCO_MSG_LEN 7
 
-static bool calculate_checksum(const uint8_t *msg, uint8_t *checksum)
+// Declare the debug task handle at the top for global access.
+static TaskHandle_t s_debugTaskHandle = NULL;
+
+static void pelco_bus_print_debug(const char *direction, const uint8_t *buffer, int length)
+{
+    printf("Debug: %s %d bytes: ", direction, length);
+    for (int index = 0; index < length; index++) {
+        printf("%02X ", buffer[index]);
+    }
+    printf("\n");
+}
+
+static bool calculate_checksum(const uint8_t *message, uint8_t *checksum)
 {
     uint16_t sum = 0;
     for (int index = 1; index < 6; index++) {
-        sum += msg[index];
+        sum += message[index];
     }
     *checksum = sum % 0x100;
     return true;
@@ -25,14 +36,14 @@ static bool calculate_checksum(const uint8_t *msg, uint8_t *checksum)
 
 esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate)
 {
-    uart_config_t uart_config = {
+    uart_config_t uartConfig = {
         .baud_rate = baud_rate,
         .data_bits = UART_DATA_8_BITS,
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     };
-    esp_err_t initializationError = uart_param_config(bus->uart_num, &uart_config);
+    esp_err_t initializationError = uart_param_config(bus->uart_num, &uartConfig);
     if (initializationError != ESP_OK) {
         ESP_LOGE(TAG, "UART param config failed");
         return initializationError;
@@ -51,124 +62,33 @@ esp_err_t pelco_bus_init(pelco_bus_t *bus, pelco_baud_rate_t baud_rate)
     return ESP_OK;
 }
 
-bool pelco_bus_command(pelco_bus_t *bus, bool disable_ack, uint8_t command, uint16_t data1, uint8_t data2)
+
+bool pelco_bus_command(pelco_bus_t *bus, uint8_t command, uint8_t data1, uint8_t data2)
 {
-    uint8_t msg[PELCO_MSG_LEN] = {0};
-    msg[0] = 0xFF;
-    msg[1] = bus->camera_address;
-    msg[2] = 0x00;
-    msg[3] = command;
-    msg[4] = (uint8_t)(data1 & 0xFF);
-    msg[5] = data2;
-    calculate_checksum(msg, &msg[6]);
+    uint8_t message[PELCO_MSG_LEN] = {0};
+    message[0] = 0xFF;
+    message[1] = bus->camera_address;
+    message[2] = 0x00;
+    message[3] = command;
+    message[4] = data1;
+    message[5] = data2;
+    calculate_checksum(message, &message[6]);
 
     if (bus->enable_pin != GPIO_NUM_NC) {
         gpio_set_level(bus->enable_pin, 1);
     }
-    int written = uart_write_bytes(bus->uart_num, (const char *)msg, PELCO_MSG_LEN);
-    if (written != PELCO_MSG_LEN) {
+    int writtenBytes = uart_write_bytes(bus->uart_num, (const char *)message, PELCO_MSG_LEN);
+    if (writtenBytes != PELCO_MSG_LEN) {
         ESP_LOGE(TAG, "Incomplete command write");
         return false;
     }
-    if (!disable_ack) {
-        if (bus->enable_pin != GPIO_NUM_NC) {
-            gpio_set_level(bus->enable_pin, 0);
-        }
-        uint8_t ack[4] = {0};
-        int ret = uart_read_bytes(bus->uart_num, ack, sizeof(ack), 100 / portTICK_PERIOD_MS);
-        if (bus->enable_pin != GPIO_NUM_NC) {
-            gpio_set_level(bus->enable_pin, 1);
-        }
-        if (ret != sizeof(ack)) {
-            ESP_LOGE(TAG, "ACK timeout or wrong length");
-            return false;
-        }
-        if (ack[0] != 0xFF || ack[1] != bus->camera_address || ack[2] != 0x00 || ack[3] != msg[6]) {
-            ESP_LOGE(TAG, "Invalid ACK received");
-            return false;
-        }
-        ESP_LOGI(TAG, "Command sent and ACK received");
+    if (s_debugTaskHandle != NULL) {
+        pelco_bus_print_debug("Sent", message, PELCO_MSG_LEN);
     }
+    // ACK processing removed as it's not part of the standard protocol.
     return true;
 }
 
-uint16_t pelco_bus_request(pelco_bus_t *bus, uint8_t request, int timeout_ms)
-{
-    if (!pelco_bus_command(bus, true, request, 0x00, 0x00)) {
-        return 0xFFFF;
-    }
-    if (bus->enable_pin != GPIO_NUM_NC) {
-        gpio_set_level(bus->enable_pin, 0);
-    }
-    uint8_t response[PELCO_MSG_LEN] = {0};
-    int ret = uart_read_bytes(bus->uart_num, response, sizeof(response), timeout_ms / portTICK_PERIOD_MS);
-    if (bus->enable_pin != GPIO_NUM_NC) {
-        gpio_set_level(bus->enable_pin, 1);
-    }
-    if (ret != sizeof(response)) {
-        ESP_LOGE(TAG, "Request timeout or wrong response length");
-        return 0xFFFF;
-    }
-    if (response[0] != 0xFF) {
-        ESP_LOGE(TAG, "Response sync byte error");
-        return 0xFFFF;
-    }
-    uint8_t checksum;
-    calculate_checksum(response, &checksum);
-    if (checksum != response[6]) {
-        ESP_LOGE(TAG, "Response checksum error");
-        return 0xFFFF;
-    }
-    return (((uint16_t)response[4]) << 8) | response[5];
-}
-
-bool pelco_bus_send_raw(pelco_bus_t *bus, const char *hex_string)
-{
-    char hexBuffer[128];
-    strncpy(hexBuffer, hex_string, sizeof(hexBuffer));
-    hexBuffer[sizeof(hexBuffer) - 1] = '\0';
-    char *source = hexBuffer, *destination = hexBuffer;
-    while (*source) {
-        if (*source != ' ') {
-            *destination++ = *source;
-        }
-        source++;
-    }
-    *destination = '\0';
-    size_t hexLength = strlen(hexBuffer);
-    if (hexLength % 2 != 0 || hexLength / 2 != PELCO_MSG_LEN) {
-        ESP_LOGE(TAG, "Hex string length error");
-        return false;
-    }
-    uint8_t rawCommand[PELCO_MSG_LEN];
-    char byteString[3] = {0};
-    for (size_t index = 0; index < PELCO_MSG_LEN; index++) {
-        byteString[0] = hexBuffer[index * 2];
-        byteString[1] = hexBuffer[index * 2 + 1];
-        rawCommand[index] = (uint8_t)strtol(byteString, NULL, 16);
-    }
-    if (rawCommand[0] != 0xFF) {
-        ESP_LOGW(TAG, "Fixing sync byte");
-        rawCommand[0] = 0xFF;
-    }
-    uint8_t checksum;
-    calculate_checksum(rawCommand, &checksum);
-    if (checksum != rawCommand[6]) {
-        ESP_LOGW(TAG, "Fixing checksum");
-        rawCommand[6] = checksum;
-    }
-    if (bus->enable_pin != GPIO_NUM_NC) {
-        gpio_set_level(bus->enable_pin, 1);
-    }
-    int writtenBytes = uart_write_bytes(bus->uart_num, (const char *)rawCommand, PELCO_MSG_LEN);
-    if (writtenBytes != PELCO_MSG_LEN) {
-        ESP_LOGE(TAG, "Failed to send raw command");
-        return false;
-    }
-    return true;
-}
-
-static TaskHandle_t s_debugTaskHandle = NULL;
 
 static void pelco_bus_debug_task(void *pvParameters)
 {
